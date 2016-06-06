@@ -471,9 +471,20 @@ def new_select_event_types(initial_selection):
       x = subwindow.addstr(x, subwindow.height - 2, option, BOLD, HIGHLIGHT if selection == len(events) + 10 + i else NORMAL)
       x = subwindow.addstr(x, subwindow.height - 2, ']') + 1
 
+    event_name = None
+    if selection < 5:
+      event_name = nyx.log.TOR_RUNLEVELS[selection]
+    elif selection < 10:
+      event_name = nyx.log.NYX_RUNLEVELS[selection - 5]
+    elif selection < (len(events) + 10):
+      event_name = events[selection - 10]
+
+    if event_name:
+      subwindow.addstr_wrap(1, subwindow.height - 5, stem.control.event_description(event_name), subwindow.width - 5, 1)
+
   with nyx.curses.CURSES_LOCK:
     while True:
-      nyx.curses.draw(_render, top = _top(), width = 80, height = (len(events) / 3) + 7)
+      nyx.curses.draw(_render, top = _top(), width = 80, height = (len(events) / 3) + 11)
       key = nyx.curses.key_input()
 
       if key.match('up'):
