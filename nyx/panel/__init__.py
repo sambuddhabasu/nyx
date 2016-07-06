@@ -22,6 +22,7 @@ __all__ = [
   'connection',
   'graph',
   'header',
+  'interpreter',
   'log',
   'torrc',
 ]
@@ -266,7 +267,7 @@ class Panel(object):
     if not self.visible or HALT_ACTIVITY:
       return
 
-    if self.panel_name in ('header', 'graph', 'log'):
+    if self.panel_name in ('header', 'graph', 'log', 'interpreter'):
       height = self.get_height() if self.get_height() != -1 else None
       width = self.get_width() if self.get_width() != -1 else None
 
