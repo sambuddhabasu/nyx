@@ -85,6 +85,7 @@ import collections
 import curses
 import curses.ascii
 import curses.textpad
+import os
 import threading
 
 import stem.util.conf
@@ -242,7 +243,7 @@ def key_input(input_timeout = None):
   return KeyInput(CURSES_SCREEN.getch())
 
 
-def str_input(x, y, initial_text = ''):
+def str_input(x, y, initial_text = '', backlog=None, tab_completion=None):
   """
   Provides a text field where the user can input a string, blocking until
   they've done so and returning the result. If the user presses escape then
@@ -282,6 +283,62 @@ def str_input(x, y, initial_text = ''):
     else:
       return key
 
+  history_dict = {'selection_index': -1, 'custom_input': ''}
+
+  def handle_history_key(textbox, key):
+    if key in (curses.KEY_UP, curses.KEY_DOWN):
+      offset = 1 if key == curses.KEY_UP else -1
+      new_selection = history_dict['selection_index'] + offset
+
+      new_selection = max(-1, new_selection)
+      new_selection = min(len(backlog) - 1, new_selection)
+
+      if history_dict['selection_index'] == new_selection:
+        return None
+
+      if history_dict['selection_index'] == -1:
+        history_dict['custom_input'] = textbox.gather().strip()
+
+      if new_selection == -1:
+        new_input = history_dict['custom_input']
+      else:
+        new_input = backlog[new_selection]
+
+      y, _ = textbox.win.getyx()
+      _, max_x = textbox.win.getmaxyx()
+      textbox.win.clear()
+      textbox.win.addstr(y, 0, new_input[:max_x - 1])
+      textbox.win.move(y, min(len(new_input), max_x - 1))
+
+      history_dict['selection_index'] = new_selection
+      return None
+
+    return handle_key(textbox, key)
+
+  def handle_tab_completion(textbox, key):
+    if key == 9:
+      current_contents = textbox.gather().strip()
+      matches = tab_completion(current_contents)
+      new_input = None
+
+      if len(matches) == 1:
+        new_input = matches[0]
+      elif len(matches) > 1:
+        common_prefix = os.path.commonprefix(matches)
+        if common_prefix != current_contents:
+          new_input = common_prefix
+
+      if new_input:
+        y, _ = textbox.win.getyx()
+        _, max_x = textbox.win.getmaxyx()
+        textbox.win.clear()
+        textbox.win.addstr(y, 0, new_input[:max_x - 1])
+        textbox.win.move(y, min(len(new_input), max_x - 1))
+
+      return None
+
+    return handle_history_key(textbox, key)
+
   with CURSES_LOCK:
     try:
       curses.curs_set(1)  # show cursor
@@ -295,7 +352,12 @@ def str_input(x, y, initial_text = ''):
     curses_subwindow.addstr(0, 0, initial_text[:width - 1])
 
     textbox = curses.textpad.Textbox(curses_subwindow, insert_mode = True)
-    user_input = textbox.edit(lambda key: handle_key(textbox, key)).strip()
+    if tab_completion is not None:
+      user_input = textbox.edit(lambda key: handle_tab_completion(textbox, key)).strip()
+    elif backlog is not None:
+      user_input = textbox.edit(lambda key: handle_history_key(textbox, key)).strip()
+    else:
+      user_input = textbox.edit(lambda key: handle_key(textbox, key)).strip()
 
     try:
       curses.curs_set(0)  # hide cursor
