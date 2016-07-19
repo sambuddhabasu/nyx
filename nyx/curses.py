@@ -14,6 +14,9 @@ if we want Windows support in the future too.
   start - initializes curses with the given function
   raw_screen - provides direct access to the curses screen
   key_input - get keypress by user
+  str_input_handle_key - helper function to display content in text field
+  str_input_handle_history_key - handle up/down arrow key in text field
+  str_input_handle_tab_completion - handle tab completion in text field
   str_input - text field where user can input a string
   curses_attr - curses encoded text attribute
   screen_size - provides the dimensions of our screen
@@ -86,6 +89,7 @@ import collections
 import curses
 import curses.ascii
 import curses.textpad
+import os
 import threading
 
 import stem.util.conf
@@ -147,6 +151,8 @@ SPECIAL_KEYS = {
 }
 
 Dimensions = collections.namedtuple('Dimensions', ['width', 'height'])
+
+HISTORY_DICT = {'selection_index': -1, 'custom_input': ''}
 
 
 def conf_handler(key, value):
@@ -244,7 +250,121 @@ def key_input(input_timeout = None):
   return KeyInput(CURSES_SCREEN.getch())
 
 
-def str_input(x, y, initial_text = ''):
+def str_input_handle_key(textbox, key):
+  """
+  Outputs the entered key onto the textbox.
+
+  :param Textbox textbox: current textbox context
+  :param int key: key pressed
+
+  :returns: **str** with the user input or **None** if the prompt is canceled
+  """
+  y, x = textbox.win.getyx()
+
+  if key == 27:
+    return curses.ascii.BEL  # user pressed esc
+  elif key == curses.KEY_HOME:
+    textbox.win.move(y, 0)
+  elif key in (curses.KEY_END, curses.KEY_RIGHT):
+    msg_length = len(textbox.gather())
+    textbox.win.move(y, x)  # reverts cursor movement during gather call
+
+    if key == curses.KEY_END and msg_length > 0 and x < msg_length - 1:
+      textbox.win.move(y, msg_length - 1)  # if we're in the content then move to the end
+    elif key == curses.KEY_RIGHT and x < msg_length - 1:
+      textbox.win.move(y, x + 1)  # only move cursor if there's content after it
+  elif key == 410:
+    # if we're resizing the display during text entry then cancel it
+    # (otherwise the input field is filled with nonprintable characters)
+
+    return curses.ascii.BEL
+  else:
+    return key
+
+
+def str_input_handle_history_key(textbox, key, backlog):
+  """
+  Handles history validation. When the up/down arrow keys are pressed,
+  the relative previous/next commands are shown.
+
+  :param Textbox textbox: current textbox context
+  :param int key: key pressed
+  :param list backlog: backlog of all previous commands entered
+
+  :returns: **None** if up/down arrow key is pressed or calls function
+    to write key to the textbox
+  """
+  global HISTORY_DICT
+  if key in (curses.KEY_UP, curses.KEY_DOWN):
+    offset = 1 if key == curses.KEY_UP else -1
+    new_selection = HISTORY_DICT['selection_index'] + offset
+
+    new_selection = max(-1, new_selection)
+    new_selection = min(len(backlog) - 1, new_selection)
+
+    if HISTORY_DICT['selection_index'] == new_selection:
+      return None
+
+    if HISTORY_DICT['selection_index'] == -1:
+      HISTORY_DICT['custom_input'] = textbox.gather().strip()
+
+    if new_selection == -1:
+      new_input = HISTORY_DICT['custom_input']
+    else:
+      new_input = backlog[new_selection]
+
+    y, _ = textbox.win.getyx()
+    _, max_x = textbox.win.getmaxyx()
+    textbox.win.clear()
+    textbox.win.addstr(y, 0, new_input[:max_x - 1])
+    textbox.win.move(y, min(len(new_input), max_x - 1))
+
+    HISTORY_DICT['selection_index'] = new_selection
+    return None
+
+  return str_input_handle_key(textbox, key)
+
+
+def str_input_handle_tab_completion(textbox, key, backlog, tab_completion):
+  """
+  Handles tab completion. If the tab key is pressed, the current textbox
+  contents are checked for probable commands.
+
+  :param Textbox textbox: current textbox context
+  :param int key: key pressed
+  :param list backlog: backlog of all previous commands entered
+  :param Autocompleter.matches tab_completion: function to suggest probable
+    commands based on current content
+
+  :returns: **None** when tab key is pressed or calls function to handle
+    history validation
+  """
+
+  if key == 9:
+    current_contents = textbox.gather().strip()
+    matches = tab_completion(current_contents)
+    new_input = None
+
+    if len(matches) == 1:
+      new_input = matches[0]
+    elif len(matches) > 1:
+      common_prefix = os.path.commonprefix(matches)
+      if common_prefix != current_contents:
+        new_input = common_prefix
+
+    if new_input:
+      y, _ = textbox.win.getyx()
+      _, max_x = textbox.win.getmaxyx()
+      textbox.win.clear()
+      textbox.win.addstr(y, 0, new_input[:max_x - 1])
+      textbox.win.move(y, min(len(new_input), max_x - 1))
+
+    return None
+
+  return str_input_handle_history_key(textbox, key, backlog)
+
+
+def str_input(x, y, initial_text = '', backlog=None, tab_completion=None):
   """
   Provides a text field where the user can input a string, blocking until
   they've done so and returning the result. If the user presses escape then
@@ -258,31 +378,8 @@ def str_input(x, y, initial_text = ''):
   :param int y: vertical location
   :param str initial_text: initial input of the field
 
-  :returns: **str** with the user input or **None** if the prompt is caneled
+  :returns: **str** with the user input or **None** if the prompt is canceled
   """
-
-  def handle_key(textbox, key):
-    y, x = textbox.win.getyx()
-
-    if key == 27:
-      return curses.ascii.BEL  # user pressed esc
-    elif key == curses.KEY_HOME:
-      textbox.win.move(y, 0)
-    elif key in (curses.KEY_END, curses.KEY_RIGHT):
-      msg_length = len(textbox.gather())
-      textbox.win.move(y, x)  # reverts cursor movement during gather call
-
-      if key == curses.KEY_END and msg_length > 0 and x < msg_length - 1:
-        textbox.win.move(y, msg_length - 1)  # if we're in the content then move to the end
-      elif key == curses.KEY_RIGHT and x < msg_length - 1:
-        textbox.win.move(y, x + 1)  # only move cursor if there's content after it
-    elif key == 410:
-      # if we're resizing the display during text entry then cancel it
-      # (otherwise the input field is filled with nonprintable characters)
-
-      return curses.ascii.BEL
-    else:
-      return key
 
   with CURSES_LOCK:
     if HALT_ACTIVITY:
@@ -300,7 +397,12 @@ def str_input(x, y, initial_text = ''):
     curses_subwindow.addstr(0, 0, initial_text[:width - 1])
 
     textbox = curses.textpad.Textbox(curses_subwindow, insert_mode = True)
-    user_input = textbox.edit(lambda key: handle_key(textbox, key)).strip()
+    if tab_completion is not None:
+      user_input = textbox.edit(lambda key: str_input_handle_tab_completion(textbox, key, backlog, tab_completion)).strip()
+    elif backlog is not None:
+      user_input = textbox.edit(lambda key: str_input_handle_history_key(textbox, key, backlog)).strip()
+    else:
+      user_input = textbox.edit(lambda key: str_input_handle_key(textbox, key)).strip()
 
     try:
       curses.curs_set(0)  # hide cursor
